@@ -53,6 +53,12 @@ let
       # valide (profil 0, 8 bits, 4:2:0) ; les contrôles par image portent les
       # paramètres réels.
       ./patches/0003-v4l2-request-vp9-probe-descriptor.patch
+      # 0004 : capacité de tranches HEVC. `meson-amvdec` annonce
+      # AMVDEC_HEVC_MAX_SLICES = 800 pour SLICE_PARAMS, alors que cette série
+      # code en dur MAX_SLICES 600 et refuse l'initialisation (« unsupported
+      # max slices, 800 ») avant la moindre image. Aligner l'array sur la
+      # capacité réelle du driver.
+      ./patches/0004-v4l2-request-hevc-max-slices.patch
     ];
 
     configureFlags = (old.configureFlags or [ ]) ++ [

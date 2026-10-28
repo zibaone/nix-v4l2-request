@@ -1,0 +1,18 @@
+--- a/libavcodec/v4l2_request_hevc.c
++++ b/libavcodec/v4l2_request_hevc.c
+@@ -21,7 +21,14 @@
+ #include "internal.h"
+ #include "v4l2_request.h"
+ 
+-#define MAX_SLICES 600 // as per HEVC spec ?
++/*
++ * meson-amvdec advertises AMVDEC_HEVC_MAX_SLICES = 800 for
++ * V4L2_CID_STATELESS_HEVC_SLICE_PARAMS. Refusing anything above this array's
++ * size aborted initialisation with "unsupported max slices, 800" before a
++ * single frame was decoded, so match the driver's capacity: the array can
++ * really hold what the driver accepts.
++ */
++#define MAX_SLICES 800
+ #define V4L2_HEVC_CONTROLS_MAX 6
+ 
+ typedef struct V4L2RequestControlsHEVC {
