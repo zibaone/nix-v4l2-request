@@ -1,0 +1,252 @@
+--- a/libavcodec/v4l2_request.h
++++ b/libavcodec/v4l2_request.h
+@@ -36,10 +36,20 @@
+ typedef struct V4L2RequestBuffer {
+     int index;
+     int fd;
++    /*
++     * Multiplanar capture (NV12M) exports one dmabuf per plane, so the second
++     * plane needs its own fd/size/stride. Single-planar capture (NV12 and the
++     * sunxi/rockchip formats) keeps nb_planes == 1 and leaves these unused.
++     */
++    int fd_plane1;
+     uint8_t *addr;
+     uint32_t width;
+     uint32_t height;
+     uint32_t size;
++    uint32_t size_plane1;
++    uint32_t bytesperline;
++    uint32_t bytesperline_plane1;
++    uint32_t nb_planes;
+     uint32_t used;
+     uint32_t capabilities;
+     struct v4l2_buffer buffer;
+--- a/libavcodec/v4l2_request.c
++++ b/libavcodec/v4l2_request.c
+@@ -144,7 +144,7 @@
+ 
+ static int v4l2_request_queue_buffer(V4L2RequestContext *ctx, int request_fd, V4L2RequestBuffer *buf, uint32_t flags)
+ {
+-    struct v4l2_plane planes[1] = {};
++    struct v4l2_plane planes[2] = {};
+     struct v4l2_buffer buffer = {
+         .type = buf->buffer.type,
+         .memory = buf->buffer.memory,
+@@ -156,9 +156,14 @@
+     };
+ 
+     if (V4L2_TYPE_IS_MULTIPLANAR(buf->buffer.type)) {
++        uint32_t nb_planes = buf->nb_planes ? buf->nb_planes : 1;
++
+         planes[0].bytesused = buf->used;
++        if (nb_planes > 1)
++            planes[1].bytesused = buf->used ? buf->used / 2 : 0;
++
+         buffer.bytesused = 0;
+-        buffer.length = 1;
++        buffer.length = nb_planes;
+         buffer.m.planes = planes;
+     }
+ 
+@@ -168,7 +173,7 @@
+ static int v4l2_request_dequeue_buffer(V4L2RequestContext *ctx, V4L2RequestBuffer *buf)
+ {
+     int ret;
+-    struct v4l2_plane planes[1] = {};
++    struct v4l2_plane planes[2] = {};
+     struct v4l2_buffer buffer = {
+         .type = buf->buffer.type,
+         .memory = buf->buffer.memory,
+@@ -176,7 +181,7 @@
+     };
+ 
+     if (V4L2_TYPE_IS_MULTIPLANAR(buf->buffer.type)) {
+-        buffer.length = 1;
++        buffer.length = buf->nb_planes ? buf->nb_planes : 1;
+         buffer.m.planes = planes;
+     }
+ 
+@@ -195,6 +200,12 @@
+     uint64_t format_modifier;
+ } v4l2_request_capture_pixelformats[] = {
+     { V4L2_PIX_FMT_NV12, AV_PIX_FMT_NV12, DRM_FORMAT_NV12, DRM_FORMAT_MOD_LINEAR },
++    /*
++     * NV12M: same DRM format as NV12, but the driver keeps Y and UV in two
++     * separate V4L2 planes, hence two dmabufs (see the descriptor builder).
++     * meson-amvdec only ever exposes this one for capture.
++     */
++    { V4L2_PIX_FMT_NV12M, AV_PIX_FMT_NV12, DRM_FORMAT_NV12, DRM_FORMAT_MOD_LINEAR },
+     { V4L2_PIX_FMT_SUNXI_TILED_NV12, AV_PIX_FMT_NV12, DRM_FORMAT_NV12, DRM_FORMAT_MOD_ALLWINNER_TILED },
+ #if defined(V4L2_PIX_FMT_NV15) && defined(DRM_FORMAT_NV15)
+     { V4L2_PIX_FMT_NV15, AV_PIX_FMT_NONE, DRM_FORMAT_NV15, DRM_FORMAT_MOD_LINEAR },
+@@ -231,12 +242,13 @@
+     AVDRMFrameDescriptor *desc = &req->drm;
+     AVDRMLayerDescriptor *layer = &desc->layers[0];
+     uint32_t pixelformat = V4L2_TYPE_IS_MULTIPLANAR(format->type) ? format->fmt.pix_mp.pixelformat : format->fmt.pix.pixelformat;
++    uint64_t format_modifier = DRM_FORMAT_MOD_LINEAR;
+ 
+     layer->format = 0;
+     for (int i = 0; i < FF_ARRAY_ELEMS(v4l2_request_capture_pixelformats); i++) {
+         if (pixelformat == v4l2_request_capture_pixelformats[i].pixelformat) {
+             layer->format = v4l2_request_capture_pixelformats[i].drm_format;
+-            desc->objects[0].format_modifier = v4l2_request_capture_pixelformats[i].format_modifier;
++            format_modifier = v4l2_request_capture_pixelformats[i].format_modifier;
+             break;
+         }
+     }
+@@ -244,9 +256,41 @@
+     if (!layer->format)
+         return -1;
+ 
++    /*
++     * Multi-planar capture (NV12M): Y and UV live in two distinct dmabufs, so
++     * they cannot be described as two planes of a single object at offset 0 and
++     * pitch*height. Describe them as two objects with one plane each.
++     *
++     * Note: consumers that build one DRM framebuffer with drmModeAddFB2() only
++     * cope with the single-object layout below; the DRM PRIME frame itself is
++     * still a faithful description of the buffers.
++     */
++    if (req->capture.nb_planes > 1) {
++        desc->nb_objects = 2;
++        desc->objects[0].fd = req->capture.fd;
++        desc->objects[0].size = req->capture.size;
++        desc->objects[0].format_modifier = format_modifier;
++        desc->objects[1].fd = req->capture.fd_plane1;
++        desc->objects[1].size = req->capture.size_plane1;
++        desc->objects[1].format_modifier = format_modifier;
++
++        desc->nb_layers = 1;
++        layer->nb_planes = 2;
++        layer->planes[0].object_index = 0;
++        layer->planes[0].offset = 0;
++        layer->planes[0].pitch = req->capture.bytesperline;
++        layer->planes[1].object_index = 1;
++        layer->planes[1].offset = 0;
++        layer->planes[1].pitch = req->capture.bytesperline_plane1 ?
++                                  req->capture.bytesperline_plane1 : req->capture.bytesperline;
++
++        return 0;
++    }
++
+     desc->nb_objects = 1;
+     desc->objects[0].fd = req->capture.fd;
+     desc->objects[0].size = req->capture.size;
++    desc->objects[0].format_modifier = format_modifier;
+ 
+     desc->nb_layers = 1;
+     layer->nb_planes = 1;
+@@ -460,7 +504,12 @@
+         format.fmt.pix_mp.height = avctx->coded_height;
+         format.fmt.pix_mp.pixelformat = pixelformat;
+         format.fmt.pix_mp.plane_fmt[0].sizeimage = buffersize;
+-        format.fmt.pix_mp.num_planes = 1;
++        /*
++         * NV12M is the only multiplanar capture format negotiated here; it
++         * carries luma and chroma in two planes. NV12, the sunxi tiled format,
++         * P010 and AFBC stay single-plane, exactly as before.
++         */
++        format.fmt.pix_mp.num_planes = (pixelformat == V4L2_PIX_FMT_NV12M) ? 2 : 1;
+     } else {
+         format.fmt.pix.width = avctx->coded_width;
+         format.fmt.pix.height = avctx->coded_height;
+@@ -851,7 +900,7 @@
+ static int v4l2_request_buffer_alloc(V4L2RequestContext *ctx, V4L2RequestBuffer *buf, enum v4l2_buf_type type)
+ {
+     int ret;
+-    struct v4l2_plane planes[1] = {};
++    struct v4l2_plane planes[2] = {};
+     struct v4l2_create_buffers buffers = {
+         .count = 1,
+         .memory = V4L2_MEMORY_MMAP,
+@@ -883,10 +932,24 @@
+     }
+ 
+     if (V4L2_TYPE_IS_MULTIPLANAR(type)) {
+-        buf->width = buffers.format.fmt.pix_mp.width;
+-        buf->height = buffers.format.fmt.pix_mp.height;
+-        buf->size = buffers.format.fmt.pix_mp.plane_fmt[0].sizeimage;
+-        buf->buffer.length = 1;
++        struct v4l2_pix_format_mplane *fmt = &buffers.format.fmt.pix_mp;
++        uint32_t nb_planes = fmt->num_planes ? fmt->num_planes : 1;
++
++        if (nb_planes > 2) {
++            av_log(ctx, AV_LOG_ERROR, "%s: %u planes for type %u not supported (max 2)\n", __func__, nb_planes, type);
++            return -1;
++        }
++
++        buf->width = fmt->width;
++        buf->height = fmt->height;
++        buf->nb_planes = nb_planes;
++        buf->size = fmt->plane_fmt[0].sizeimage;
++        buf->bytesperline = fmt->plane_fmt[0].bytesperline;
++        if (nb_planes > 1) {
++            buf->size_plane1 = fmt->plane_fmt[1].sizeimage;
++            buf->bytesperline_plane1 = fmt->plane_fmt[1].bytesperline;
++        }
++        buf->buffer.length = nb_planes;
+         buf->buffer.m.planes = planes;
+     } else {
+         buf->width = buffers.format.fmt.pix.width;
+@@ -920,19 +983,31 @@
+ 
+         buf->addr = (uint8_t*)addr;
+     } else {
+-        struct v4l2_exportbuffer exportbuffer = {
+-            .type = type,
+-            .index = buf->index,
+-            .flags = O_RDONLY,
+-        };
++        uint32_t nb_planes = buf->nb_planes ? buf->nb_planes : 1;
+ 
+-        ret = ioctl(ctx->video_fd, VIDIOC_EXPBUF, &exportbuffer);
+-        if (ret < 0) {
+-            av_log(ctx, AV_LOG_ERROR, "%s: export buffer %d failed, %s (%d)\n", __func__, buf->index, strerror(errno), errno);
+-            return ret;
++        /*
++         * Each V4L2 plane is a separate buffer object, so multiplanar capture
++         * needs one export per plane (NV12M: Y then UV).
++         */
++        for (uint32_t p = 0; p < nb_planes; p++) {
++            struct v4l2_exportbuffer exportbuffer = {
++                .type = type,
++                .index = buf->index,
++                .plane = p,
++                .flags = O_RDONLY,
++            };
++
++            ret = ioctl(ctx->video_fd, VIDIOC_EXPBUF, &exportbuffer);
++            if (ret < 0) {
++                av_log(ctx, AV_LOG_ERROR, "%s: export buffer %d plane %u failed, %s (%d)\n", __func__, buf->index, p, strerror(errno), errno);
++                return ret;
++            }
++
++            if (p == 0)
++                buf->fd = exportbuffer.fd;
++            else
++                buf->fd_plane1 = exportbuffer.fd;
+         }
+-
+-        buf->fd = exportbuffer.fd;
+     }
+ 
+     av_log(ctx, AV_LOG_DEBUG, "%s: buf=%p index=%d fd=%d addr=%p width=%u height=%u size=%u\n", __func__,
+@@ -950,6 +1025,8 @@
+ 
+     if (buf->fd >= 0)
+         close(buf->fd);
++    if (buf->fd_plane1 >= 0)
++        close(buf->fd_plane1);
+ }
+ 
+ static void v4l2_request_frame_free(void *opaque, uint8_t *data)
+@@ -990,7 +1067,9 @@
+     req = (V4L2RequestDescriptor*)data;
+     req->request_fd = -1;
+     req->output.fd = -1;
++    req->output.fd_plane1 = -1;
+     req->capture.fd = -1;
++    req->capture.fd_plane1 = -1;
+ 
+     ret = v4l2_request_buffer_alloc(ctx, &req->output, ctx->output_type);
+     if (ret < 0) {

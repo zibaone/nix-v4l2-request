@@ -36,7 +36,15 @@ let
   # patch. `--enable-libudev` est requis par la RCU (deps
   # `v4l2_request_deps="… libdrm libudev"`) et n'est pas câblé par generic.nix.
   patched = ffmpeg_6.overrideAttrs (old: {
-    patches = (old.patches or [ ]) ++ [ ./patches/0001-v4l2-request-ffmpeg-6.1.6.patch ];
+    patches = (old.patches or [ ]) ++ [
+      ./patches/0001-v4l2-request-ffmpeg-6.1.6.patch
+      # 0002 : capture multi-plan (NV12M). Requis par meson-amvdec (Amlogic
+      # GXL/GXM), qui n'expose que NV12M en capture ; 0001 ne négocie que des
+      # formats mono-plan et échoue donc à `select capture format failed`.
+      # Additif : les formats mono-plan (NV12, sunxi tiled, P010, AFBC) sont
+      # inchangés.
+      ./patches/0002-v4l2-request-nv12m-capture.patch
+    ];
 
     configureFlags = (old.configureFlags or [ ]) ++ [
       "--enable-v4l2-request"
