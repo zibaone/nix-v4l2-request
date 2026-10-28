@@ -1,0 +1,25 @@
+--- a/libavcodec/v4l2_request_vp9.c
++++ b/libavcodec/v4l2_request_vp9.c
+@@ -261,6 +261,22 @@
+ 
+     fill_frame(&frame, avctx);
+ 
++    /*
++     * At this point no frame header has been parsed yet, so fill_frame()
++     * leaves bit_depth, the chroma subsampling flags and the dimensions
++     * unset. The kernel's try_ctrl rejects such a descriptor with -EINVAL,
++     * which makes the probe report "No V4L2 media device found" even though
++     * the driver is perfectly capable. Probe with a valid baseline
++     * descriptor instead; the per-frame controls still carry the real
++     * stream parameters.
++     */
++    frame.profile = 0;
++    frame.bit_depth = 8;
++    frame.flags |= V4L2_VP9_FRAME_FLAG_X_SUBSAMPLING |
++                   V4L2_VP9_FRAME_FLAG_Y_SUBSAMPLING;
++    frame.frame_width_minus_1 = (avctx->width ? avctx->width : 64) - 1;
++    frame.frame_height_minus_1 = (avctx->height ? avctx->height : 64) - 1;
++
+     // TODO: check V4L2_CID_MPEG_VIDEO_VP9_PROFILE
+     return ff_v4l2_request_init(avctx, V4L2_PIX_FMT_VP9_FRAME, 3 * 1024 * 1024, control, FF_ARRAY_ELEMS(control));
+ }

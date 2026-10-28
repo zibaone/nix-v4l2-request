@@ -44,6 +44,15 @@ let
       # Additif : les formats mono-plan (NV12, sunxi tiled, P010, AFBC) sont
       # inchangés.
       ./patches/0002-v4l2-request-nv12m-capture.patch
+      # 0003 : sonde VP9. `v4l2_request_vp9_init()` appelle `fill_frame()` alors
+      # qu'aucun en-tête n'a encore été analysé : le descripteur envoyé au probe
+      # a `bit_depth` nul, pas de drapeau de sous-échantillonnage et des
+      # dimensions à -1. Le `try_ctrl` du driver `meson-amvdec` le rejette par
+      # EINVAL, et ffmpeg conclut « No V4L2 media device found for VP9F » alors
+      # que le matériel est capable. On sonde avec un descripteur de référence
+      # valide (profil 0, 8 bits, 4:2:0) ; les contrôles par image portent les
+      # paramètres réels.
+      ./patches/0003-v4l2-request-vp9-probe-descriptor.patch
     ];
 
     configureFlags = (old.configureFlags or [ ]) ++ [
