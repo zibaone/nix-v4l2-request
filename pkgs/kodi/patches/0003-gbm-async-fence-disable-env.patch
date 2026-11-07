@@ -1,0 +1,47 @@
+--- a/xbmc/windowing/gbm/WinSystemGbmEGLContext.cpp
++++ b/xbmc/windowing/gbm/WinSystemGbmEGLContext.cpp
+@@ -13,6 +13,8 @@
+ #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
+ #include "utils/log.h"
+ 
++#include <cstdlib>
++
+ using namespace KODI::WINDOWING::GBM;
+ using namespace KODI::WINDOWING::LINUX;
+ 
+@@ -58,15 +60,32 @@
+     return false;
+   }
+ 
+-  if (CEGLUtils::HasExtension(m_eglContext.GetEGLDisplay(), "EGL_ANDROID_native_fence_sync") &&
++  // Chemin « atomic asynchrone à fences EGL » : sur sunxi/H618 avec panfrost,
++  // chaque fence qui ne peut pas être dupliquée (eglDupNativeFenceFDANDROID
++  // renvoie EGL_NO_NATIVE_FENCE_FD_ANDROID alors que le pilote annonce
++  // EGL_ANDROID_native_fence_sync) laisse un descripteur derrière elle.
++  // Mesuré le 2026-11-07 sur une OrangePi Zero 3 : 986 erreurs en 40 min de
++  // direct TV = table de descripteurs pleine (LimitNOFILE=1024), puis
++  // EGL_BAD_DISPLAY sur eglSwapBuffers et abandon de Kodi.
++  // Le comportement d'amont reste le défaut ; KODI_GBM_DISABLE_ASYNC_FENCE=1
++  // repasse aux commits bloquants (comme Kodi 20) : plus de fence à dupliquer,
++  // donc plus de fuite, au prix d'une latence de page-flip.
++  const bool asyncFenceDisabled = std::getenv("KODI_GBM_DISABLE_ASYNC_FENCE") != nullptr;
++
++  if (!asyncFenceDisabled &&
++      CEGLUtils::HasExtension(m_eglContext.GetEGLDisplay(), "EGL_ANDROID_native_fence_sync") &&
+       CEGLUtils::HasExtension(m_eglContext.GetEGLDisplay(), "EGL_KHR_fence_sync"))
+   {
+     m_eglFence = std::make_unique<KODI::UTILS::EGL::CEGLFence>(m_eglContext.GetEGLDisplay());
+   }
+   else
+   {
+-    CLog::Log(LOGWARNING, "[GBM] missing support for EGL_KHR_fence_sync and "
+-                          "EGL_ANDROID_native_fence_sync - performance may be impacted");
++    if (asyncFenceDisabled)
++      CLog::Log(LOGINFO, "[GBM] async EGL fencing disabled by KODI_GBM_DISABLE_ASYNC_FENCE - "
++                         "using blocking atomic commits");
++    else
++      CLog::Log(LOGWARNING, "[GBM] missing support for EGL_KHR_fence_sync and "
++                            "EGL_ANDROID_native_fence_sync - performance may be impacted");
+   }
+ 
+   return true;

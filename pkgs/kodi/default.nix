@@ -13,6 +13,10 @@
 #  - défaut de `videoplayer.useprimedecoder` à true (0002) : sans lui
 #    `CDVDVideoCodecDRMPRIME::Create()` renvoie nullptr et Kodi décode en CPU
 #    sans le dire — le reste du paquet ne servirait à rien.
+#  - garde `KODI_GBM_DISABLE_ASYNC_FENCE` (0003) : sur panfrost/H618, le chemin
+#    « atomic asynchrone à fences EGL » d'amont fuit un descripteur par fence
+#    non duplicable (mesuré : 986 en 40 min, table à 1 024 → EGL_BAD_DISPLAY
+#    puis abandon). La variable force les commits bloquants, comme Kodi 20.
 #
 # Sur 21.3 + la série ffmpeg 6.0/6.1 (device_type = DRM) le comportement est
 # identique SANS le patch 0001 ; il est là pour la variante ffmpeg 7+, où le
@@ -40,6 +44,7 @@ in
     patches = (old.patches or [ ]) ++ [
       ./patches/0001-DVDVideoCodecDRMPRIME-v4l2request-hwdevice.patch
       ./patches/0002-linux-default-useprimedecoder.patch
+      ./patches/0003-gbm-async-fence-disable-env.patch
     ];
 
     # Le 0002 est un patch de données (system/settings/linux.xml) : s'il cesse
@@ -49,6 +54,12 @@ in
       grep -A5 'id="videoplayer.useprimedecoder"' system/settings/linux.xml \
         | grep -q '<default>true</default>' \
         || { echo "0002 : videoplayer.useprimedecoder n'est pas à true" >&2; exit 1; }
+
+      # Le 0003 est une garde conditionnelle : s'il s'appliquait au mauvais
+      # endroit, la compilation passerait sans que la variable soit jamais lue.
+      grep -q 'std::getenv("KODI_GBM_DISABLE_ASYNC_FENCE")' \
+        xbmc/windowing/gbm/WinSystemGbmEGLContext.cpp \
+        || { echo "0003 : la garde KODI_GBM_DISABLE_ASYNC_FENCE est absente" >&2; exit 1; }
     '';
 
     # Élagage : bluez (télécommandes BT passent par le noyau/rc-core),
