@@ -17,6 +17,10 @@
 #    « atomic asynchrone à fences EGL » d'amont fuit un descripteur par fence
 #    non duplicable (mesuré : 986 en 40 min, table à 1 024 → EGL_BAD_DISPLAY
 #    puis abandon). La variable force les commits bloquants, comme Kodi 20.
+#  - délai de configuration du renderer porté à 30 s (0004) : sur H618, ouvrir
+#    la fenêtre vidéo prend 3,5 à 13,5 s côté thread applicatif, alors que le
+#    thread vidéo n'attendait que 1 s — écran noir avec le son en décodage
+#    matériel, et première image retardée de 5 à 10 s en logiciel.
 #
 # Sur 21.3 + la série ffmpeg 6.0/6.1 (device_type = DRM) le comportement est
 # identique SANS le patch 0001 ; il est là pour la variante ffmpeg 7+, où le
@@ -45,6 +49,7 @@ in
       ./patches/0001-DVDVideoCodecDRMPRIME-v4l2request-hwdevice.patch
       ./patches/0002-linux-default-useprimedecoder.patch
       ./patches/0003-gbm-async-fence-disable-env.patch
+      ./patches/0004-renderer-configure-timeout.patch
     ];
 
     # Le 0002 est un patch de données (system/settings/linux.xml) : s'il cesse
@@ -60,6 +65,12 @@ in
       grep -q 'std::getenv("KODI_GBM_DISABLE_ASYNC_FENCE")' \
         xbmc/windowing/gbm/WinSystemGbmEGLContext.cpp \
         || { echo "0003 : la garde KODI_GBM_DISABLE_ASYNC_FENCE est absente" >&2; exit 1; }
+
+      # Le 0004 est un changement de constante : s'il s'appliquait au mauvais
+      # Wait(), la compilation passerait et le correctif serait inerte.
+      grep -A1 'm_stateEvent.Wait(30000ms)' \
+        xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp >/dev/null \
+        || { echo "0004 : le délai de configuration du renderer n'est pas à 30 s" >&2; exit 1; }
     '';
 
     # Élagage : bluez (télécommandes BT passent par le noyau/rc-core),

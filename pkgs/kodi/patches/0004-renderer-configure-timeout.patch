@@ -1,0 +1,20 @@
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -137,7 +137,16 @@
+     m_presentevent.notifyAll();
+   }
+ 
+-  if (!m_stateEvent.Wait(1000ms))
++  // sunxi H618 (OrangePi Zero 3) : la première configuration attend le
++  // changement de fenêtre côté thread applicatif (Home -> VideoFullScreen et
++  // chargement du skin), mesuré entre 3,5 et 13,5 s sur cette carte — le pire
++  // cas étant la première ouverture après démarrage, skin non encore parsé.
++  // Avec 1 s, le thread vidéo abandonnait avant : la première image n'arrivait
++  // qu'au retry suivant, ou jamais en décodage matériel (la première frame est
++  // prête tout de suite, le renderer reste non configuré : écran noir, son
++  // seul). On laisse donc au thread applicatif le temps de finir ; le coût d'un
++  // vrai échec est un gel de 30 s au lieu de 1 s, pas une régression.
++  if (!m_stateEvent.Wait(30000ms))
+   {
+     CLog::Log(LOGWARNING, "CRenderManager::Configure - timeout waiting for configure");
+     std::unique_lock<CCriticalSection> lock(m_statelock);
