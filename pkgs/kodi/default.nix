@@ -1,6 +1,6 @@
 # Kodi 21.3 patché pour le décodeur stateless V4L2 Request (sunxi H616/H618).
 #
-# Quatre adaptations par rapport à `kodi-gbm` de nixpkgs :
+# Adaptations par rapport à `kodi-gbm` de nixpkgs :
 #  - fenêtrage GBM (et non Wayland) : Kodi envoie sa requête plein écran avant
 #    le mapping de sa surface (xbmc#20629, #27882) ; les compositeurs stricts
 #    (wlroots, weston) l'ignorent et Kodi n'obtient jamais de taille valide —
@@ -21,6 +21,12 @@
 #    la fenêtre vidéo prend 3,5 à 13,5 s côté thread applicatif, alors que le
 #    thread vidéo n'attendait que 1 s — écran noir avec le son en décodage
 #    matériel, et première image retardée de 5 à 10 s en logiciel.
+#  - import de la fence de lecture GPU dans le dma-buf du buffer vidéo (0005) :
+#    sans lui le décodeur peut réécrire un buffer que le GPU lit encore. La
+#    fence native est dupliquée puis importée par DMA_BUF_IOCTL_IMPORT_SYNC_FILE
+#    (DMA_BUF_SYNC_READ) — l'ordre passe ensuite par `dma_resv` côté noyau
+#    (patch cedrus), et `NeedBuffer()` n'a plus à retenir les buffers sur une
+#    fence EGL que panfrost ne signale pas pour les imports DRM PRIME.
 #
 # Sur 21.3 + la série ffmpeg 6.0/6.1 (device_type = DRM) le comportement est
 # identique SANS le patch 0001 ; il est là pour la variante ffmpeg 7+, où le
@@ -50,6 +56,7 @@ in
       ./patches/0002-linux-default-useprimedecoder.patch
       ./patches/0003-gbm-async-fence-disable-env.patch
       ./patches/0004-renderer-configure-timeout.patch
+      ./patches/0005-drmprime-import-sync-file.patch
     ];
 
     # Le 0002 est un patch de données (system/settings/linux.xml) : s'il cesse
@@ -71,6 +78,13 @@ in
       grep -A1 'm_stateEvent.Wait(30000ms)' \
         xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp >/dev/null \
         || { echo "0004 : le délai de configuration du renderer n'est pas à 30 s" >&2; exit 1; }
+
+      # Le 0005 est un appel noyau inséré dans Render() : s'il s'appliquait au
+      # mauvais endroit, la compilation passerait et la fence ne serait jamais
+      # importée — le décodeur écraserait des buffers encore lus par le GPU.
+      grep -q 'DMA_BUF_IOCTL_IMPORT_SYNC_FILE' \
+        xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp \
+        || { echo "0005 : l'import de la fence GPU dans le dma-buf est absent" >&2; exit 1; }
     '';
 
     # Élagage : bluez (télécommandes BT passent par le noyau/rc-core),

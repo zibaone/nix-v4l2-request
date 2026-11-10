@@ -1,0 +1,106 @@
+Import de la fence de lecture GPU dans le dma-buf du buffer vidéo.
+
+RendererDRMPRIMEGLES délie sa texture EGL à la fin de Render() alors que le
+GPU peut encore lire le dma-buf : rien n'empêche le décodeur V4L2 de réécrire
+le buffer avant la fin de cette lecture.
+
+On duplique donc la dma-fence du GPU en descripteur de fichier
+(CEGLFence::CreateGPUFence/FlushFence) et on l'importe dans chaque objet du
+buffer vidéo avec DMA_BUF_IOCTL_IMPORT_SYNC_FILE en DMA_BUF_SYNC_READ :
+`dma_resv` fait alors attendre tout écrivain suivant, décodeur compris (patch
+cedrus côté noyau). NeedBuffer() renvoie true — Kodi ne retient plus le buffer
+sur la foi d'une fence EGL que panfrost ne signale pas pour les imports DRM
+PRIME.
+
+Le chemin des codecs sans dma-buf exploitable (ou sans fd de fence) garde la
+fence EGL ordinaire.
+
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.cpp
+@@ -22,7 +22,12 @@
+ #include "windowing/WinSystem.h"
+ #include "windowing/linux/WinSystemEGL.h"
+ 
++#include <cerrno>
+ #include <memory>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++#include <linux/dma-buf.h>
+ 
+ using namespace KODI::UTILS::EGL;
+ 
+@@ -164,7 +169,15 @@
+ 
+ bool CRendererDRMPRIMEGLES::NeedBuffer(int index)
+ {
+-  return !m_buffers[index].fence->IsSignaled();
++  // Le buffer n'est retenu que si l'interface est composée par-dessus la vidéo
++  // (OSD) : sinon `CRenderManager::WaitForBuffer` le libère de lui-même. Dans
++  // les deux cas, l'ordre est garanti par le noyau — la fence de lecture GPU
++  // importée dans le dma-buf (voir Render()) est attendue par `dma_resv` avant
++  // toute réécriture, décodeur V4L2 compris (patch cedrus). Interroger la
++  // fence EGL ici n'apprendrait rien : panfrost ne signale pas
++  // EGL_SYNC_FENCE_KHR sur les imports DRM PRIME, la réponse serait « occupé »
++  // à vie et le buffer ne reviendrait jamais dans le pool.
++  return true;
+ }
+ 
+ CRenderInfo CRendererDRMPRIMEGLES::GetRenderInfo()
+@@ -388,8 +401,56 @@
+ 
+   glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+ 
++  // La texture vient d'être déliée mais le GPU peut encore lire le dma-buf du
++  // buffer vidéo. On duplique sa fence en descripteur de fichier, puis on
++  // l'importe dans chaque objet du dma-buf en lecture (DMA_BUF_SYNC_READ) :
++  // la fence devient une fence de lecture du dma-buf, que `dma_resv` fait
++  // attendre à tout écrivain suivant — le décodeur V4L2 en premier lieu.
++  // L'ordre est alors garanti par le noyau, sans que Kodi ait à retenir le
++  // buffer (voir NeedBuffer()).
++  //
++  // L'import prend sa propre référence sur la fence : le fd rendu par
++  // `FlushFence()` est une copie, on referme la nôtre aussitôt après.
++  //
++  // Les codecs qui n'exposent pas de dma-buf exploitable gardent l'ancien
++  // chemin, fence EGL ordinaire.
++#if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
++  buf.fence->DestroyFence();
++
++  AVDRMFrameDescriptor* descriptor = buffer->GetDescriptor();
++  if (descriptor && descriptor->nb_objects > 0)
++  {
++    buf.fence->CreateGPUFence();
++
++    const int fenceFd = static_cast<int>(buf.fence->FlushFence());
++    if (fenceFd >= 0)
++    {
++      for (int i = 0; i < descriptor->nb_objects; i++)
++      {
++        struct dma_buf_import_sync_file importSync = {};
++        importSync.flags = DMA_BUF_SYNC_READ;
++        importSync.fd = fenceFd;
++
++        if (ioctl(descriptor->objects[i].fd, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, &importSync) < 0)
++          CLog::LogF(LOGWARNING, "failed to import the GPU fence into dma-buf object {} (errno {})",
++                     i, errno);
++      }
++
++      close(fenceFd);
++    }
++    else
++    {
++      CLog::LogF(LOGWARNING, "no native fence fd: dma-buf ordering is not enforced");
++    }
++  }
++  else
++  {
++    buf.fence->CreateFence();
++  }
++#else
+   buf.fence->DestroyFence();
+   buf.fence->CreateFence();
++#endif
+ }
+ 
+ bool CRendererDRMPRIMEGLES::Supports(ERENDERFEATURE feature) const
