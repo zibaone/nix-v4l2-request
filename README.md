@@ -3,9 +3,12 @@
 Paquets Nix pour le décodage matériel **stateless V4L2 Request** : FFmpeg 6.1
 patché, et Kodi 21.3 qui l'utilise.
 
-> **Statut : expérimental.** Les paquets se construisent et le contrat hwaccel est
-> vérifié en CI, mais **le décodage n'a pas été validé sur matériel**. Rien ici ne
-> doit être lu comme « le hwdec fonctionne » avant les mesures listées en § État.
+> **Statut : décodage validé sur H618 réel ; affichage Kodi du VP9 en cours.**
+> Le décodage FFmpeg `-hwaccel drm` est mesuré sur Orange Pi Zero 3 (H264, HEVC,
+> VP8, MPEG2, VP9 à 27-30 fps en 1080p). L'affichage Kodi du VP9 reste bloqué
+> par l'absence de fencing VPU↔GPU : le patch fence natif (0006) affiche mais
+> coûte 30-44 % de `wa` et a été retiré. Le correctif de fond est spécifié dans
+> [`docs/specs/drmprime-explicit-fencing.md`](docs/specs/drmprime-explicit-fencing.md).
 
 ## Périmètre
 
@@ -155,19 +158,22 @@ plus qu'un cache pour une architecture abandonnée.
 | gate `hwconfig` (h264 + hevc) sur aarch64 | passe : `pix_fmt=drm_prime methods=HW_DEVICE_CTX device_type=drm` |
 | gate `hwconfig` sur x86_64 | construit par le job `gate-x86_64` (runner x86 natif) |
 | `nix flake check` (formatage inclus) | bloque la CI et protège `master` |
-| **décodage sur H618 réel** | **non fait** |
+| **décodage sur H618 réel** (`ffmpeg -hwaccel drm`, 1080p) | **mesuré** : H264 29 fps, HEVC 28, VP8 30, MPEG2 27, VP9 29 |
+| **affichage Kodi VP9** | image avec le patch 0006 ; `wa` 30-44 % → patch retiré ; fencing noyau spécifié |
 
-Ce qui reste à prouver, et comment :
+Ce qui est mesuré (Zero 3, noyau 7.0.14 + patch cedrus VP9) :
 
-1. `v4l2-ctl --list-formats-out -d /dev/video*` expose H264 et HEVC ;
-2. `dmesg | grep -i -E "cedrus|video-engine"` montre le VPU et le node VE ;
-3. `kodi.log` contient la création d'un device hwaccel (`creating … hwdevice
-   context`) et non plus « using drm device for av_hwdevice_ctx » ;
-4. lecture d'un 1080p H.264 : charge CPU par cœur nettement en dessous de 100 %
-   sur les cœurs A53.
+1. `v4l2-ctl --list-formats-ext` expose `S264`, `S265`, `VP8F`, `VP9F`, `MG2S` ;
+2. `dmesg` montre le VPU `1c0e000.video-codec` et cedrus ;
+3. `kodi.log` contient `using decoder Google VP9` et `drm hwdevice context` ;
+4. `ffmpeg -hwaccel drm` : 29 fps en VP9 1080p (`0.97x`, utime 10,2 s pour
+   10 s) ; 44 fps en 1412×1080 (`1.44x`).
 
-Tant que ces quatre points ne sont pas mesurés, ce dépôt ne prétend pas que le
-décodage matériel fonctionne.
+Ce qui reste ouvert :
+
+- l'affichage Kodi du VP9 sans lag : fencing VPU↔GPU, voir la spec ;
+- le VP9 10-bit (P010/AFBC, patch 0413) ;
+- les mesures Kodi par codec (les non-régressions ffmpeg sont faites).
 
 ## Provenance, auteurs, licences
 
