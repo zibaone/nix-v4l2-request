@@ -35,15 +35,15 @@ fence EGL ordinaire.
  bool CRendererDRMPRIMEGLES::NeedBuffer(int index)
  {
 -  return !m_buffers[index].fence->IsSignaled();
-+  // Le buffer n'est retenu que si l'interface est composée par-dessus la vidéo
-+  // (OSD) : sinon `CRenderManager::WaitForBuffer` le libère de lui-même. Dans
-+  // les deux cas, l'ordre est garanti par le noyau — la fence de lecture GPU
-+  // importée dans le dma-buf (voir Render()) est attendue par `dma_resv` avant
-+  // toute réécriture, décodeur V4L2 compris (patch cedrus). Interroger la
-+  // fence EGL ici n'apprendrait rien : panfrost ne signale pas
-+  // EGL_SYNC_FENCE_KHR sur les imports DRM PRIME, la réponse serait « occupé »
-+  // à vie et le buffer ne reviendrait jamais dans le pool.
-+  return true;
++  // Le buffer est toujours rendu : `CRenderManager` ne le libère que si
++  // `!NeedBuffer()` **ou** si la GUI n'est pas composée par-dessus la vidéo
++  // (RenderManager.cpp:318). `true` bloquait donc le pool dès que l'OSD ou le
++  // rond de chargement était affiché — mesuré le 2026-11-11 : image figée à
++  // 0,1 s, `timeout waiting for buffer` en rafale, horloge arrêtée.
++  // L'ordre est garanti par le noyau : la fence de lecture GPU importée dans le
++  // dma-buf (voir Render()) est attendue par `dma_resv` avant toute réécriture
++  // (patch cedrus) ; la fence EGL, elle, ne se signale pas sous panfrost.
++  return false;
  }
  
  CRenderInfo CRendererDRMPRIMEGLES::GetRenderInfo()
