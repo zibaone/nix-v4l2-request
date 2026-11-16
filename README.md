@@ -28,6 +28,11 @@ de noyau : la compilation n'a besoin que des en-têtes V4L2 de `linux-headers`.
 Le noyau n'intervient qu'à l'exécution — driver `cedrus`, `/dev/media0`, API
 Request.
 
+Aucun patch kernel ici non plus : les patches de ce dépôt sont **userspace**
+(FFmpeg/Kodi). Un patch kernel (backport V4L2 Request, DRM) appartient à la
+couche famille qui construit le noyau, ou à un export commun nixbian ; jamais à
+ce dépôt (décision B, 2026-11-16).
+
 Écrit pour Allwinner H616/H618 (Orange Pi Zero 3, driver `cedrus`), mais rien
 n'est propre à ce SoC : la même série couvre `rkvdec` (Rockchip), `hantro`
 (i.MX8M), `meson-vdec`. Le nom suit l'API amont, pas la carte.
