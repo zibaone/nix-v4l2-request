@@ -55,9 +55,12 @@ jobs:
       #   CACHIX_SIGNING_KEY  — clé de signature côté client (le cache refuse
       #                         un narinfo non signé : 400 « This cache
       #                         requires client-side signing »).
-      # Sans le second, cachix-action échoue en post-traitement : c'est
-      # pourquoi `skipPush` avait été posé, puis retiré une fois la clé en
-      # place. Ne pas remettre l'un sans l'autre.
+      #
+      # `skipPush: true` : l'action ne pousse ni compilateurs ni sources ; le
+      # push explicite plus bas ne pousse que les fermetures utiles et vérifie
+      # leurs narinfos. Le daemon de l'action annonçait « Pushed » des chemins
+      # restés 404 (run 39595259213), donc son post-traitement ne sert pas de
+      # preuve.
       #
       # Sur une PR venue d'un fork, les secrets sont absents : on saute la
       # publication, la construction reste vérifiée.
@@ -67,6 +70,7 @@ jobs:
           name: havenos
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
           signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
+          skipPush: true
 
       - name: Environnement
         run: |
@@ -134,12 +138,15 @@ jobs:
           CACHIX_SIGNING_KEY: ${{ secrets.CACHIX_SIGNING_KEY }}
         run: |
           set -euo pipefail
-          paths=$(nix path-info -r \
+          paths=()
+          while IFS= read -r p; do
+            paths+=("$p")
+          done < <(nix path-info -r \
             .#packages.aarch64-linux.kodi \
             .#packages.aarch64-linux.kodi-kiosk \
             .#packages.aarch64-linux.ffmpeg-v4l2request \
-            .#checks.aarch64-linux.kiosk-closure | tr '\n' ' ')
-          cachix push havenos $paths
+            .#checks.aarch64-linux.kiosk-closure)
+          cachix push havenos "${paths[@]}"
           echo "— contrôle des sorties attendues —"
           for p in \
             $(nix path-info .#packages.aarch64-linux.kodi) \
@@ -150,6 +157,44 @@ jobs:
             code=$(curl -s -o /dev/null -w '%{http_code}' "https://havenos.cachix.org/$h.narinfo")
             echo "$code  $(basename "$p")"
             test "$code" = "200"
+          done
+
+      # Les sorties lourdes peuvent être évincées d'un cache Cachix partagé
+      # (quota). Les épingler est ce qui rend le cache utile au-delà du run :
+      # le 2026-11-24, ffmpeg-headless et ffmpeg-6.1.6 étaient absents de
+      # havenos alors que le log du run 43013708183 les avait copiés depuis ce
+      # cache. `pins` était vide. On épingle les fermetures exactes que la
+      # cible H96 demande, pas tout ce que le job a compilé.
+      - name: Épingler les sorties H96 au cache (anti-éviction)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -t paths < <(
+            nix path-info \
+              .#packages.aarch64-linux.kodi-kiosk \
+              .#packages.aarch64-linux.ffmpeg-v4l2request \
+              .#checks.aarch64-linux.kiosk-closure
+            # ffmpeg-headless n'est pas un attribut du flake : il est tiré par
+            # la fermeture kiosque. On pinne sa sortie, sinon l'éviction
+            # ramène le build qemu de 1 h 30.
+            nix-store -qR --include-outputs \
+              "$(nix path-info .#checks.aarch64-linux.kiosk-closure)" |
+              grep -E -- '-ffmpeg-headless-[0-9.]+$' || true
+            # Tous les outputs de ffmpeg-v4l2request : out, dev, man, bin,
+            # lib, data. Le seul output bin ne suffit pas au consommateur.
+            nix-store -q --outputs \
+              "$(nix eval --raw .#packages.aarch64-linux.ffmpeg-v4l2request.drvPath)"
+          )
+          for p in "${paths[@]}"; do
+            [ -n "$p" ] || continue
+            echo "pin $p"
+            curl -fsS -X POST \
+              -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
+              -H 'Content-Type: application/json' \
+              -d "{\"name\":\"h96-kiosk\",\"storePath\":\"$p\",\"artifacts\":[]}" \
+              https://app.cachix.org/api/v1/cache/havenos/pin >/dev/null
           done
 
       - name: Mesures (tailles réelles)
