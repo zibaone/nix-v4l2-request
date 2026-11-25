@@ -88,6 +88,11 @@
           # système au lieu d'en embarquer une seconde copie (674 Mio de
           # fermeture, dont 149 Mio uniques à la variante non élaguée).
           kodi-kiosk = (mkPackages (kioskFor system)).kodi;
+          # Variante élaguée de ffmpeg-headless, identique à celle que
+          # l'image kiosque construit via kioskFor. Sans attribut explicite,
+          # la CI la compile mais ne la pousse pas : le pin de la cible H96
+          # laissait `hyh1lk7...` absent du cache.
+          ffmpeg-headless-kiosk = (kioskFor system).ffmpeg-headless;
           # Même variante pour un kiosque à compositeur : ce que l'image
           # consommerait si l'on rebasculait sur cage.
           kodi-kiosk-wayland = (mkPackages (kioskFor system)).kodi-wayland;

@@ -121,6 +121,9 @@ jobs:
       - name: Build fermeture kiosque (chronométré)
         run: |
           s=$(date +%s)
+          # Le paquet explicite permet au push/pin de retrouver hyh… ; il est
+          # aussi dans la closure mais pas nécessairement dans le runtime.
+          nix build -L .#packages.aarch64-linux.ffmpeg-headless-kiosk
           nix build -L .#checks.aarch64-linux.kiosk-closure
           d=$(( $(date +%s) - s ))
           echo "| kiosk-closure | ${d}s |" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -145,13 +148,31 @@ jobs:
             .#packages.aarch64-linux.kodi \
             .#packages.aarch64-linux.kodi-kiosk \
             .#packages.aarch64-linux.ffmpeg-v4l2request \
+            .#packages.aarch64-linux.ffmpeg-headless-kiosk \
             .#checks.aarch64-linux.kiosk-closure)
+          # Les outputs non default de ffmpeg 6.1.6 (data, bin, lib, dev,
+          # man, doc) ne sont pas toujours dans nix path-info -r ; le `out`
+          # 2ywd… manquait et faisait échouer le pin.
+          while IFS= read -r p; do
+            paths+=("$p")
+          done < <(nix-store -q --outputs \
+            "$(nix eval --raw .#packages.aarch64-linux.ffmpeg-v4l2request.drvPath)")
+          # ffmpeg-headless a pour output par défaut `bin` : le `out` hyh…
+          # (celui de la cible) n'est pas exposé par nix path-info sans
+          # --all-outputs. On itère sur les outputs de la dérivation.
+          while IFS= read -r p; do
+            paths+=("$p")
+          done < <(nix-store -q --outputs \
+            "$(nix eval --raw .#packages.aarch64-linux.ffmpeg-headless-kiosk.drvPath)")
           cachix push havenos "${paths[@]}"
           echo "— contrôle des sorties attendues —"
+          ffmpeg_headless_outputs=$(nix-store -q --outputs \
+            "$(nix eval --raw .#packages.aarch64-linux.ffmpeg-headless-kiosk.drvPath)")
           for p in \
             $(nix path-info .#packages.aarch64-linux.kodi) \
             $(nix path-info .#packages.aarch64-linux.kodi-kiosk) \
             $(nix path-info .#packages.aarch64-linux.ffmpeg-v4l2request) \
+            $ffmpeg_headless_outputs \
             $(nix path-info .#checks.aarch64-linux.kiosk-closure); do
             h=$(basename "$p" | cut -c1-32)
             code=$(curl -s -o /dev/null -w '%{http_code}' "https://havenos.cachix.org/$h.narinfo")
@@ -175,7 +196,11 @@ jobs:
             nix path-info \
               .#packages.aarch64-linux.kodi-kiosk \
               .#packages.aarch64-linux.ffmpeg-v4l2request \
+              .#packages.aarch64-linux.ffmpeg-headless-kiosk \
               .#checks.aarch64-linux.kiosk-closure
+            # Tous les outputs de ffmpeg-headless-kiosk, dont le `out` hyh…
+            nix-store -q --outputs \
+              "$(nix eval --raw .#packages.aarch64-linux.ffmpeg-headless-kiosk.drvPath)"
             # ffmpeg-headless n'est pas un attribut du flake : il est tiré par
             # la fermeture kiosque. On pinne sa sortie, sinon l'éviction
             # ramène le build qemu de 1 h 30.
@@ -189,12 +214,19 @@ jobs:
           )
           for p in "${paths[@]}"; do
             [ -n "$p" ] || continue
+            if ! nix store ls --store https://havenos.cachix.org "$p" >/dev/null 2>&1; then
+              echo "absent du cache, pin ignoré : $p"
+              continue
+            fi
             echo "pin $p"
             curl -fsS -X POST \
               -H "Authorization: Bearer $CACHIX_AUTH_TOKEN" \
               -H 'Content-Type: application/json' \
               -d "{\"name\":\"h96-kiosk\",\"storePath\":\"$p\",\"artifacts\":[]}" \
-              https://app.cachix.org/api/v1/cache/havenos/pin >/dev/null
+              https://app.cachix.org/api/v1/cache/havenos/pin >/dev/null || {
+                echo "échec du pin : $p"
+                exit 1
+              }
           done
 
       - name: Mesures (tailles réelles)
